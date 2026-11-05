@@ -3,16 +3,56 @@ build-backend = "setuptools.build_meta"
 requires = ["setuptools>=77", "wheel"]
 
 [project]
+authors = [{ email = "marvin.vanaalst@gmail.com", name = "Marvin van Aalst" }]
+classifiers = [
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: C",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+]
+# llvmlite JIT-compiles models for these solvers. It only has wheels for linux
+# x86_64/aarch64, macOS arm64 and windows amd64/arm64; MxlPy's `native` extra
+# installs the WASM backend everywhere else, so this is never pulled in there.
+dependencies = ["llvmlite>=0.45"]
 description = "Compiled ODE solvers for MxlPy's Native integrator"
 license = "MIT"
+license-files = ["LICENSE", "c/vendor/*LICENCE*.txt"]
 name = "mxlpy-native"
+readme = "README.md"
 requires-python = ">=3.12"
-version = "0.2.0"
+version = "0.3.0"
+
+[project.urls]
+Homepage = "https://github.com/Computational-Biology-Aachen/mxlpy-native"
+Issues = "https://github.com/Computational-Biology-Aachen/mxlpy-native/issues"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.9", "setuptools>=77"]
 
 [tool.cibuildwheel]
+# One abi3 wheel per platform covers Python 3.12+.
 build = "cp312-*"
-skip = ["*-musllinux_*", "*-win32", "*-manylinux_i686"]
-test-command = "python -c \"import mxlpy_native; assert mxlpy_native.library_path().exists()\""
+# Only platforms llvmlite publishes wheels for.
+skip = ["*-musllinux_*", "*-win32", "*-manylinux_i686", "*-macosx_x86_64"]
+test-command = "python -m mxlpy_native"
+
+[tool.cibuildwheel.macos]
+environment = { MACOSX_DEPLOYMENT_TARGET = "12.0" }
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = ["COM812", "D203", "D213", "S101", "T201", "PLR2004"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["D", "INP001", "ANN"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.uv]
+exclude-newer = "3 days"

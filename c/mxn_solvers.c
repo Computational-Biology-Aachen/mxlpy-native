@@ -15,6 +15,11 @@
 #define MXN_API
 #endif
 
+/* Bump whenever an exported signature or its meaning changes, together with ABI_VERSION
+ * in mxlpy_native/__init__.py and the version MxlPy's Native integrator expects. */
+#define MXN_ABI_VERSION 1
+MXN_API int mxn_abi_version(void) { return MXN_ABI_VERSION; }
+
 extern int radau5_(integer *n, U_fp fcn, doublereal *x, doublereal *y, doublereal *xend, doublereal *h,
                    doublereal *rtol, doublereal *atol, integer *itol, U_fp jac, integer *ijac, integer *mljac,
                    integer *mujac, U_fp mas, integer *imas, integer *mlmas, integer *mumas, U_fp solout,
