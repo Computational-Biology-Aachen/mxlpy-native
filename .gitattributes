@@ -1,0 +1,2 @@
+# Hashed by tests/test_vendor.py, so checkouts must keep the bytes exactly.
+c/vendor/** -text
