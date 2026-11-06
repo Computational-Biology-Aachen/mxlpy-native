@@ -29,7 +29,7 @@ def test_abi_matches() -> None:
     assert mxlpy_native.load().mxn_abi_version() == mxlpy_native.ABI_VERSION
 
 
-@pytest.mark.parametrize("method", ["radau", "lsoda"])
+@pytest.mark.parametrize("method", ["radau", "lsoda", "cvode-bdf", "cvode-adams"])
 def test_solve_exponential_decay(method: str) -> None:
     lib = mxlpy_native.load()
     t_out = [0.0, 0.5, 1.0, 2.0]
@@ -40,9 +40,12 @@ def test_solve_exponential_decay(method: str) -> None:
     if method == "radau":
         rc = lib.mxn_radau(*head, 0, len(t_out), t, out)
         assert rc == 1
-    else:
+    elif method == "lsoda":
         rc = lib.mxn_lsoda(*head, len(t_out), t, out)
         assert rc == 2
+    else:
+        rc = lib.mxn_cvode(*head, int(method == "cvode-adams"), len(t_out), t, out)
+        assert rc == 1
     for i, ti in enumerate(t_out):
         assert out[2 * i] == pytest.approx(math.exp(-0.7 * ti), rel=1e-7)
         assert out[2 * i + 1] == pytest.approx(2 * math.exp(-0.7 * ti), rel=1e-7)

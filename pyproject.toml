@@ -16,13 +16,13 @@ classifiers = [
 # x86_64/aarch64, macOS arm64 and windows amd64/arm64; MxlPy's `native` extra
 # installs the WASM backend everywhere else, so this is never pulled in there.
 dependencies = ["llvmlite>=0.45"]
-description = "Compiled ODE solvers for MxlPy's Native integrator"
+description = "Compiled ODE solvers (RADAU5, LSODA, SUNDIALS CVODE) for MxlPy's Native integrator"
 license = "MIT"
-license-files = ["LICENSE", "c/vendor/*LICENCE*.txt"]
+license-files = ["LICENSE", "c/vendor/*LICENCE*.txt", "c/vendor/*NOTICE*.txt"]
 name = "mxlpy-native"
 readme = "README.md"
 requires-python = ">=3.12"
-version = "0.3.0"
+version = "0.4.0"
 
 [project.urls]
 Homepage = "https://github.com/Computational-Biology-Aachen/mxlpy-native"

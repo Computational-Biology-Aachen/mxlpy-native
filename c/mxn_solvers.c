@@ -1,9 +1,15 @@
-/* RADAU5 and LSODA for MxlPy's Native integrator, returning values at requested time
- * points. The same source builds the native wheel and solvers.wasm. The solvers
- * themselves are vendored from mxl-solvers (see vendor/VENDORED). RADAU5 and this
+/* RADAU5, LSODA and CVODE for MxlPy's Native integrator, returning values at requested
+ * time points. The same source builds the native wheel and solvers.wasm. The solvers
+ * themselves are vendored from mxl-solvers (see vendor/VENDORED); CVODE is SUNDIALS'
+ * (vendor/sundials, BSD-3-Clause, see vendor/SUNDIALS-LICENCE.txt). RADAU5 and this
  * file keep global state, so only one solve can run at a time in a process. */
 #include "f2c.h"
 #include "lsoda.h"
+#include <cvode/cvode.h>
+#include <nvector/nvector_serial.h>
+#include <sunlinsol/sunlinsol_dense.h>
+#include <sunmatrix/sunmatrix_dense.h>
+#include <sunnonlinsol/sunnonlinsol_fixedpoint.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -17,7 +23,7 @@
 
 /* Bump whenever an exported signature or its meaning changes, together with ABI_VERSION
  * in mxlpy_native/__init__.py and the version MxlPy's Native integrator expects. */
-#define MXN_ABI_VERSION 1
+#define MXN_ABI_VERSION 2
 MXN_API int mxn_abi_version(void) { return MXN_ABI_VERSION; }
 
 extern int radau5_(integer *n, U_fp fcn, doublereal *x, doublereal *y, doublereal *xend, doublereal *h,
@@ -150,6 +156,75 @@ MXN_API int mxn_lsoda(int n, double *y, double *pars, double rtol, double atol, 
         if (!isfinite(y[i])) return -9;
     }
     return 2;
+}
+
+static int cvode_rhs(sunrealtype t, N_Vector y, N_Vector dydt, void *user_data) {
+    (void)user_data;
+    int n = (int)N_VGetLength(y);
+    double *f = N_VGetArrayPointer(dydt);
+    g_model(n, t, N_VGetArrayPointer(y), f, g_pars);
+    for (int i = 0; i < n; i++) {
+        if (!isfinite(f[i])) return 1; /* recoverable: CVODE retries with a smaller step */
+    }
+    return 0;
+}
+
+/* Same contract as mxn_lsoda, with SUNDIALS' CVODE: BDF with Newton iteration and a dense
+ * difference-quotient Jacobian, or with adams != 0, Adams-Moulton with fixed-point
+ * iteration. nmax caps the total number of steps. Returns 1 on success, or CVODE's
+ * negative flag: -1 too many steps, -2 too much accuracy requested, -3 repeated error
+ * test failures, -4 repeated convergence failures, -8 the right-hand side kept failing
+ * (non-finite), -22 bad input, ... (see cvode.h). Returns -99 if allocation fails or the
+ * result isn't finite. */
+MXN_API int mxn_cvode(int n, double *y, double *pars, double rtol, double atol, int nmax, int adams, int n_out,
+                      const double *t_out, double *y_out) {
+    SUNContext ctx = NULL;
+    if (SUNContext_Create(SUN_COMM_NULL, &ctx) != 0) return -99;
+    N_Vector v = N_VMake_Serial(n, y, ctx); /* works on y in place */
+    void *mem = CVodeCreate(adams ? CV_ADAMS : CV_BDF, ctx);
+    SUNMatrix A = NULL;
+    SUNLinearSolver ls = NULL;
+    SUNNonlinearSolver nls = NULL;
+    int flag = (v && mem) ? CV_SUCCESS : -99;
+    g_pars = pars;
+    if (flag == CV_SUCCESS) flag = CVodeInit(mem, cvode_rhs, t_out[0], v);
+    if (flag == CV_SUCCESS) flag = CVodeSStolerances(mem, rtol, atol);
+    /* Never step past the last output time: models needn't be defined beyond it. */
+    if (flag == CV_SUCCESS) flag = CVodeSetStopTime(mem, t_out[n_out - 1]);
+    if (flag == CV_SUCCESS && adams) {
+        nls = SUNNonlinSol_FixedPoint(v, 0, ctx);
+        flag = nls ? CVodeSetNonlinearSolver(mem, nls) : -99;
+    } else if (flag == CV_SUCCESS) {
+        A = SUNDenseMatrix(n, n, ctx);
+        ls = A ? SUNLinSol_Dense(v, A, ctx) : NULL;
+        flag = ls ? CVodeSetLinearSolver(mem, ls, A) : -99;
+    }
+    memcpy(y_out, y, (size_t)n * sizeof(double));
+    double t = t_out[0];
+    for (int k = 1; k < n_out && flag >= 0; k++) {
+        if (t_out[k] != t_out[k - 1]) {
+            long int steps = 0;
+            CVodeGetNumSteps(mem, &steps);
+            if (steps >= nmax) {
+                flag = CV_TOO_MUCH_WORK;
+                break;
+            }
+            CVodeSetMaxNumSteps(mem, nmax - steps);
+            flag = CVode(mem, t_out[k], v, &t, CV_NORMAL);
+        }
+        if (flag >= 0) memcpy(y_out + (size_t)k * (size_t)n, y, (size_t)n * sizeof(double));
+    }
+    CVodeFree(&mem);
+    SUNNonlinSolFree(nls);
+    SUNLinSolFree(ls);
+    SUNMatDestroy(A);
+    N_VDestroy(v);
+    SUNContext_Free(&ctx);
+    if (flag < 0) return flag;
+    for (int i = 0; i < n; i++) {
+        if (!isfinite(y[i])) return -99;
+    }
+    return 1;
 }
 
 /* Evaluates fn once per row of y, writing n_out values per row into out. */

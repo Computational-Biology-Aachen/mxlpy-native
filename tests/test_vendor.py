@@ -25,8 +25,8 @@ def _manifest() -> dict[str, str]:
 def test_vendored_solvers_are_unmodified() -> None:
     manifest = _manifest()
     actual = {
-        p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-        for p in VENDOR.iterdir()
-        if p.name != "VENDORED"
+        p.relative_to(VENDOR).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in VENDOR.rglob("*")
+        if p.is_file() and p.name != "VENDORED"
     }
     assert actual == manifest

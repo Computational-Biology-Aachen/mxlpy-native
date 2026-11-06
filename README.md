@@ -1,10 +1,20 @@
 # mxlpy-native
 
-The compiled Radau and LSODA solvers behind [MxlPy](https://github.com/Computational-Biology-Aachen/MxlPy)'s `Native` integrator, plus `llvmlite`, which compiles models to machine code for them. Install it through MxlPy rather than on its own:
+The compiled Radau, LSODA and CVODE solvers behind [MxlPy](https://github.com/Computational-Biology-Aachen/MxlPy)'s `Native` integrator, plus `llvmlite`, which compiles models to machine code for them. Install it through MxlPy rather than on its own:
 
 ```bash
 pip install "mxlpy[native]"
 ```
+
+## Solvers and licences
+
+| Solver | Origin | Licence |
+|---|---|---|
+| RADAU5 | E. Hairer and G. Wanner, via f2c | `c/vendor/HAIRER-LICENCE.txt` |
+| LSODA | SciPy's C translation of ODEPACK | `c/vendor/SCIPY-LICENCE.txt` |
+| CVODE (BDF and Adams) | [SUNDIALS](https://github.com/LLNL/sundials) v7.9.0, © Lawrence Livermore National Security and the SUNDIALS contributors | `c/vendor/SUNDIALS-LICENCE.txt` (BSD-3-Clause), `c/vendor/SUNDIALS-NOTICE.txt` |
+
+All three are vendored from [mxl-solvers](https://github.com/Computational-Biology-Aachen/mxl-solvers), whose README lists the papers to cite for SUNDIALS. The licence files ship in every wheel.
 
 ## Platforms
 

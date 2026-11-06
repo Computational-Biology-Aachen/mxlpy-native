@@ -13,6 +13,7 @@ from __future__ import annotations
 import platform
 import shutil
 import sys
+from pathlib import Path
 
 from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
@@ -93,12 +94,18 @@ class BuildExt(build_ext):
 
 
 vendored = ["radau5.c", "dc_decsol.c", "decsol.c", "libf2c_stubs.c", "lsoda.c", "mxs_lapack.c"]
+# mxl-solvers vendors only the SUNDIALS files CVODE needs, so all of them are built.
+sundials = sorted(p.as_posix() for p in Path("c/vendor/sundials/src").rglob("*.c"))
 setup(
     ext_modules=[
         Extension(
             "mxlpy_native._solvers",
-            sources=["c/mxn_solvers.c", *(f"c/vendor/{s}" for s in vendored)],
-            include_dirs=["c/vendor"],
+            sources=["c/mxn_solvers.c", *(f"c/vendor/{s}" for s in vendored), *sundials],
+            include_dirs=[
+                "c/vendor",
+                "c/vendor/sundials/include",
+                "c/vendor/sundials/src/sundials",
+            ],
             py_limited_api=True,
             define_macros=[("Py_LIMITED_API", "0x030C0000")],
             # lsoda.c needs C11 (restrict, compound literals), which MSVC only enables on request.

@@ -1,1 +1,2 @@
 include c/*.c c/vendor/*.c c/vendor/*.h c/vendor/*.txt c/vendor/VENDORED
+recursive-include c/vendor/sundials *.c *.h

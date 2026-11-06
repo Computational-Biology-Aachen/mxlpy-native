@@ -18,7 +18,7 @@ __all__ = ["ABI_VERSION", "NativeInstallError", "__version__", "library_path", "
 
 # Must match MXN_ABI_VERSION in c/mxn_solvers.c. MxlPy checks it before calling into
 # the library, so a mismatched pair fails with an upgrade hint instead of crashing.
-ABI_VERSION = 1
+ABI_VERSION = 2
 
 try:
     __version__ = version("mxlpy-native")
