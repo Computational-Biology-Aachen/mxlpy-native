@@ -93,7 +93,22 @@ class BuildExt(build_ext):
             raise _BuildError(msg) from e
 
 
-vendored = ["radau5.c", "dc_decsol.c", "decsol.c", "libf2c_stubs.c", "lsoda.c", "mxs_lapack.c"]
+vendored = [
+    "radau5.c",
+    "dc_decsol.c",
+    "decsol.c",
+    "dop853.c",
+    "dopri5.c",
+    "libf2c_stubs.c",
+    "lsoda.c",
+    "mxs_lapack.c",
+    # Levenberg-Marquardt fits with forward sensitivities (cminpack lmder)
+    "radau5_wrapper.c",
+    "solver_common.c",
+    "fit_experiments.c",
+    "jacobian_wrapper.c",
+    *(f"minpack/{f}.c" for f in ("lmder", "dpmpar", "enorm", "lmpar", "qrfac", "qrsolv")),
+]
 # mxl-solvers vendors only the SUNDIALS files CVODE needs, so all of them are built.
 sundials = sorted(p.as_posix() for p in Path("c/vendor/sundials/src").rglob("*.c"))
 setup(
