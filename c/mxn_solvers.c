@@ -23,7 +23,7 @@
 
 /* Bump whenever an exported signature or its meaning changes, together with ABI_VERSION
  * in mxlpy_native/__init__.py and the version MxlPy's Native integrator expects. */
-#define MXN_ABI_VERSION 2
+#define MXN_ABI_VERSION 3
 MXN_API int mxn_abi_version(void) { return MXN_ABI_VERSION; }
 
 extern int radau5_(integer *n, U_fp fcn, doublereal *x, doublereal *y, doublereal *xend, doublereal *h,
@@ -235,6 +235,71 @@ MXN_API void mxn_eval_rows(intptr_t fn, int n, int n_out, int rows, const double
         f(n, t[r], y + (size_t)r * (size_t)n, out + (size_t)r * (size_t)n_out, pars);
     }
 }
+
+/* ------------------------------------------------------------------ */
+/* Levenberg-Marquardt fits with forward sensitivities                 */
+/* ------------------------------------------------------------------ */
+/* Exported wrappers around mxl-solvers' jacobian_wrapper.c (lmder over an augmented system of
+ * states and sensitivities, see its header comment) and fit_experiments.h, which defines the
+ * experiment layout. Like the solvers above, a fit keeps global state, so only one runs at a
+ * time. Functions are function pointers natively and table indices in wasm. */
+void set_derived_fn(intptr_t fn);
+void set_derived_grad_fn(intptr_t fn);
+void jacobian_set_plain_fn(intptr_t fn);
+void jacobian_set_augmented_fn(intptr_t fn);
+int jacobian_init(int n_y, double *y0, int n_pars, double *pars, int n_theta, int *theta_idx,
+                  int *log_flags, int n_targets, int *target_kind, int *target_index, double *target_scale,
+                  int n_ovr, int *ovr_idx, int n_exp, int *exp_kind, int *exp_n_seg, int *exp_n_points,
+                  int n_seg_total, double *seg_t_end, double *seg_ovr, int n_points, double *data_t,
+                  double *data_y, int n_derived, int solver_id, double rtol, double atol, double ss_tol,
+                  double ss_t_max, double target_residual_norm, int progress_interval);
+int jacobian_chunk(int maxfev);
+int jacobian_get_nfev(void);
+double jacobian_get_residual_norm(void);
+void jacobian_get_params(double *out);
+int jacobian_get_predictions(double *out);
+int jacobian_get_jacobian(double *out);
+void jacobian_free(void);
+
+/* plain: the model (n_y outputs); augmented: states then sensitivities, parameter-major
+ * (n_y * (1 + n_theta) outputs); derived / derived_grad: derived targets and their gradients
+ * [d/dy, d/dtheta] per target, 0 if there are none. */
+MXN_API void mxn_fit_set_fns(intptr_t plain, intptr_t augmented, intptr_t derived,
+                             intptr_t derived_grad) {
+    jacobian_set_plain_fn(plain);
+    jacobian_set_augmented_fn(augmented);
+    set_derived_fn(derived);
+    set_derived_grad_fn(derived_grad);
+}
+
+/* Arguments as jacobian_init (fit_experiments.h): returns 0, -1 out of memory, -2 a log
+ * parameter isn't positive, -3 inconsistent experiments, -4 a fitted parameter is overridden,
+ * -5 derived targets without derived functions. */
+MXN_API int mxn_fit_init(int n_y, double *y0, int n_pars, double *pars, int n_theta, int *theta_idx,
+                         int *log_flags, int n_targets, int *target_kind, int *target_index,
+                         double *target_scale, int n_ovr, int *ovr_idx, int n_exp, int *exp_kind,
+                         int *exp_n_seg, int *exp_n_points, int n_seg_total, double *seg_t_end,
+                         double *seg_ovr, int n_points, double *data_t, double *data_y, int n_derived,
+                         int solver_id, double rtol, double atol, double ss_tol, double ss_t_max) {
+    return jacobian_init(n_y, y0, n_pars, pars, n_theta, theta_idx, log_flags, n_targets, target_kind,
+                         target_index, target_scale, n_ovr, ovr_idx, n_exp, exp_kind, exp_n_seg,
+                         exp_n_points, n_seg_total, seg_t_end, seg_ovr, n_points, data_t, data_y,
+                         n_derived, solver_id, rtol, atol, ss_tol, ss_t_max, -1.0, 0);
+}
+
+/* Runs lmder for at most maxfev residual evaluations. Returns MINPACK's info: 1-4 converged,
+ * 5 out of evaluations (call again to continue), others failed. */
+MXN_API int mxn_fit_chunk(int maxfev) { return jacobian_chunk(maxfev); }
+MXN_API int mxn_fit_nfev(void) { return jacobian_get_nfev(); }
+MXN_API double mxn_fit_residual_norm(void) { return jacobian_get_residual_norm(); }
+/* All n_pars parameters, with the fitted ones at their current values. */
+MXN_API void mxn_fit_params(double *out) { jacobian_get_params(out); }
+/* Model values at the data points (n_targets * n_points, NaN for failed experiments). */
+MXN_API int mxn_fit_predictions(double *out) { return jacobian_get_predictions(out); }
+/* Residual Jacobian at the current parameters, column-major (n_targets * n_points, n_theta),
+ * with respect to the natural logarithm of log-fitted parameters. */
+MXN_API int mxn_fit_jacobian(double *out) { return jacobian_get_jacobian(out); }
+MXN_API void mxn_fit_free(void) { jacobian_free(); }
 
 #ifdef MXN_WASM
 /* Model math stays inside wasm, rather than calling back into Python. */
