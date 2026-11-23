@@ -23,7 +23,7 @@
 
 /* Bump whenever an exported signature or its meaning changes, together with ABI_VERSION
  * in mxlpy_native/__init__.py and the version MxlPy's Native integrator expects. */
-#define MXN_ABI_VERSION 3
+#define MXN_ABI_VERSION 4
 MXN_API int mxn_abi_version(void) { return MXN_ABI_VERSION; }
 
 extern int radau5_(integer *n, U_fp fcn, doublereal *x, doublereal *y, doublereal *xend, doublereal *h,
@@ -300,6 +300,49 @@ MXN_API int mxn_fit_predictions(double *out) { return jacobian_get_predictions(o
  * with respect to the natural logarithm of log-fitted parameters. */
 MXN_API int mxn_fit_jacobian(double *out) { return jacobian_get_jacobian(out); }
 MXN_API void mxn_fit_free(void) { jacobian_free(); }
+
+/* ------------------------------------------------------------------ */
+/* Adjoint gradients                                                   */
+/* ------------------------------------------------------------------ */
+/* Exported wrappers around mxl-solvers' adjoint_wrapper.c: one forward and one backward solve
+ * per experiment give the gradient of sum(cotangent * model values) w.r.t. the parameters and
+ * the initial state. Global state like the fits, so only one runs at a time. */
+void set_forward_model_fn(intptr_t fn);
+void set_adjoint_fn(intptr_t fn);
+int adjoint_vjp(int n_y, double *y0, int n_pars, double *pars, int n_theta, int *theta_idx,
+                int n_targets, int *target_kind, int *target_index, int n_ovr, int *ovr_idx,
+                int n_exp, int *exp_kind, int *exp_n_seg, int *exp_n_points, int n_seg_total,
+                double *seg_t_end, double *seg_ovr, int n_points, double *data_t,
+                double *cotangent, int n_derived, int solver_id, double rtol, double atol,
+                double ss_tol, double ss_t_max, double *out_pred, double *out_grad,
+                double *out_lambda0);
+
+/* model: the model; adjoint: void(n, t, y, lambda, pars, dlambda, dtheta) writing
+ * -(df/dy)^T lambda and -lambda^T df/dtheta; derived / derived_grad as for mxn_fit_set_fns. */
+MXN_API void mxn_adjoint_set_fns(intptr_t model, intptr_t adjoint, intptr_t derived,
+                                 intptr_t derived_grad) {
+    set_forward_model_fn(model);
+    set_adjoint_fn(adjoint);
+    set_derived_fn(derived);
+    set_derived_grad_fn(derived_grad);
+}
+
+/* Arguments as adjoint_vjp (adjoint_wrapper.c, fit_experiments.h's experiment layout), with the
+ * cotangent in data_y's layout. Returns 0, -1 out of memory, -3 inconsistent experiments, -4 a
+ * differentiated parameter is overridden, -5 derived targets without derived functions, -7
+ * functions not set, or a failed experiment's negative solver code. */
+MXN_API int mxn_adjoint_vjp(int n_y, double *y0, int n_pars, double *pars, int n_theta,
+                            int *theta_idx, int n_targets, int *target_kind, int *target_index,
+                            int n_ovr, int *ovr_idx, int n_exp, int *exp_kind, int *exp_n_seg,
+                            int *exp_n_points, int n_seg_total, double *seg_t_end, double *seg_ovr,
+                            int n_points, double *data_t, double *cotangent, int n_derived,
+                            int solver_id, double rtol, double atol, double ss_tol, double ss_t_max,
+                            double *out_pred, double *out_grad, double *out_lambda0) {
+    return adjoint_vjp(n_y, y0, n_pars, pars, n_theta, theta_idx, n_targets, target_kind,
+                       target_index, n_ovr, ovr_idx, n_exp, exp_kind, exp_n_seg, exp_n_points,
+                       n_seg_total, seg_t_end, seg_ovr, n_points, data_t, cotangent, n_derived,
+                       solver_id, rtol, atol, ss_tol, ss_t_max, out_pred, out_grad, out_lambda0);
+}
 
 #ifdef MXN_WASM
 /* Model math stays inside wasm, rather than calling back into Python. */
