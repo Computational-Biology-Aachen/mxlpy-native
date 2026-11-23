@@ -107,6 +107,8 @@ vendored = [
     "solver_common.c",
     "fit_experiments.c",
     "jacobian_wrapper.c",
+    # Adjoint gradients
+    "adjoint_wrapper.c",
     *(f"minpack/{f}.c" for f in ("lmder", "dpmpar", "enorm", "lmpar", "qrfac", "qrsolv")),
 ]
 # mxl-solvers vendors only the SUNDIALS files CVODE needs, so all of them are built.
