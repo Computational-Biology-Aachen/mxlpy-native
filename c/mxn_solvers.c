@@ -3,6 +3,7 @@
  * themselves are vendored from mxl-solvers (see vendor/VENDORED); CVODE is SUNDIALS'
  * (vendor/sundials, BSD-3-Clause, see vendor/SUNDIALS-LICENCE.txt). RADAU5 and this
  * file keep global state, so only one solve can run at a time in a process. */
+#include "discrete_adjoint.h"
 #include "f2c.h"
 #include "lsoda.h"
 #include <cvode/cvode.h>
@@ -23,7 +24,7 @@
 
 /* Bump whenever an exported signature or its meaning changes, together with ABI_VERSION
  * in mxlpy_native/__init__.py and the version MxlPy's Native integrator expects. */
-#define MXN_ABI_VERSION 4
+#define MXN_ABI_VERSION 5
 MXN_API int mxn_abi_version(void) { return MXN_ABI_VERSION; }
 
 extern int radau5_(integer *n, U_fp fcn, doublereal *x, doublereal *y, doublereal *xend, doublereal *h,
@@ -36,6 +37,9 @@ extern double radau5_jac_growth;
 
 typedef void (*ModelFn)(int, double, double *, double *, double *);
 static ModelFn g_model;
+/* The model's Jacobian df/dy (ModelFn signature, n x n column-major), NULL = the solvers'
+ * finite differences. */
+static ModelFn g_jac;
 static double *g_pars; /* LSODA's right-hand side takes no parameter array. */
 static const double *g_t_out;
 static double *g_y_out;
@@ -50,7 +54,13 @@ static int fcn_dispatch(integer *n, doublereal *x, doublereal *y, doublereal *f,
     return 0;
 }
 
-static int no_jac(void) { return 0; }
+static int radau_jac(integer *n, doublereal *x, doublereal *y, doublereal *dfy, integer *ldfy,
+                     doublereal *rpar, integer *ipar) {
+    (void)ldfy; /* full Jacobian: ldfy == n */
+    (void)ipar;
+    g_jac((int)*n, *x, y, dfy, rpar);
+    return 0;
+}
 static int no_mas(void) { return 0; }
 
 static int solout(integer *nr, doublereal *xold, doublereal *x, doublereal *y, doublereal *cont, integer *lrc,
@@ -71,12 +81,14 @@ static int solout(integer *nr, doublereal *xold, doublereal *x, doublereal *y, d
 }
 
 /* Integrates from t_out[0] to t_out[n_out - 1], writing rows of n values into y_out.
- * y holds the initial state on entry and the final state on return. Returns RADAU5's
+ * y holds the initial state on entry and the final state on return. jac is the model's
+ * Jacobian (see g_jac), 0 for finite differences. Returns RADAU5's
  * IDID: positive on success, -1 bad input, -2 too many steps, -3 step too small,
  * -4 singular matrix. Returns -5 if allocation fails or the result isn't finite. */
-MXN_API int mxn_radau(int n, double *y, double *pars, double rtol, double atol, int nmax, int reuse_jacobian,
-                      int n_out, const double *t_out, double *y_out) {
-    integer N = n, itol = 0, ijac = 0, mljac = n, mujac = n, imas = 0, mlmas = n, mumas = n, iout = 1, idid = 0, ipar = 0;
+MXN_API int mxn_radau(int n, double *y, double *pars, intptr_t jac, double rtol, double atol, int nmax,
+                      int reuse_jacobian, int n_out, const double *t_out, double *y_out) {
+    g_jac = (ModelFn)jac;
+    integer N = n, itol = 0, ijac = jac ? 1 : 0, mljac = n, mujac = n, imas = 0, mlmas = n, mumas = n, iout = 1, idid = 0, ipar = 0;
     integer lwork = 4 * N * N + 12 * N + 20, liwork = 3 * N + 20;
     doublereal *work = calloc((size_t)lwork, sizeof(doublereal));
     integer *iwork = calloc((size_t)liwork, sizeof(integer));
@@ -101,7 +113,7 @@ MXN_API int mxn_radau(int n, double *y, double *pars, double rtol, double atol, 
     g_y_out = y_out;
     g_n_out = n_out;
     g_next = 0;
-    radau5_(&N, (U_fp)fcn_dispatch, &x, y, &xend, &h, &rt, &at, &itol, (U_fp)no_jac, &ijac, &mljac, &mujac,
+    radau5_(&N, (U_fp)fcn_dispatch, &x, y, &xend, &h, &rt, &at, &itol, (U_fp)radau_jac, &ijac, &mljac, &mujac,
             (U_fp)no_mas, &imas, &mlmas, &mumas, (U_fp)solout, &iout, work, &lwork, iwork, &liwork, pars, &ipar, &idid);
     free(work);
     free(iwork);
@@ -116,14 +128,20 @@ MXN_API int mxn_radau(int n, double *y, double *pars, double rtol, double atol, 
 
 static void lsoda_fcn(int *n, double *t, double *y, double *dydt) { g_model(*n, *t, y, dydt, g_pars); }
 
-/* Same contract as mxn_radau, with LSODA (SciPy's C translation) and its internal
- * finite-difference Jacobian. nmax caps the total number of steps. Returns 2 on
+static void lsoda_jac(int *n, double *t, double *y, int *ml, int *mu, double *pd, int *nrowpd) {
+    (void)ml; (void)mu; (void)nrowpd; /* full Jacobian: nrowpd == n */
+    g_jac(*n, *t, y, pd, g_pars);
+}
+
+/* Same contract as mxn_radau, with LSODA (SciPy's C translation), using jac or its
+ * internal finite-difference Jacobian. nmax caps the total number of steps. Returns 2 on
  * success, or LSODA's negative ISTATE: -1 too many steps, -2 too much accuracy
  * requested, -3 bad input, -4 repeated error test failures, -5 repeated convergence
  * failures, -6 an error weight became zero. Returns -9 if allocation fails or the
  * result isn't finite. */
-MXN_API int mxn_lsoda(int n, double *y, double *pars, double rtol, double atol, int nmax, int n_out,
-                      const double *t_out, double *y_out) {
+MXN_API int mxn_lsoda(int n, double *y, double *pars, intptr_t jac, double rtol, double atol, int nmax,
+                      int n_out, const double *t_out, double *y_out) {
+    g_jac = (ModelFn)jac;
     /* Work array sizes as in SciPy's odepack: Adams up to order 12, BDF up to 5. */
     const int lrn = 20 + n * 13 + 3 * n, lrs = 20 + n * 6 + 3 * n + n * n + 2;
     const int lrw = lrn > lrs ? lrn : lrs, liw = 20 + n;
@@ -143,8 +161,8 @@ MXN_API int mxn_lsoda(int n, double *y, double *pars, double rtol, double atol, 
     for (int k = 1; k < n_out && istate > 0; k++) {
         double tout = t_out[k];
         if (tout != t_out[k - 1]) {
-            lsoda(lsoda_fcn, n, y, &t, &tout, 1, &rtol, &atol, &itask, &istate, &iopt, rwork, lrw, iwork, liw, NULL,
-                  2, &S);
+            lsoda(lsoda_fcn, n, y, &t, &tout, 1, &rtol, &atol, &itask, &istate, &iopt, rwork, lrw, iwork, liw,
+                  jac ? lsoda_jac : NULL, jac ? 1 : 2, &S);
             if (istate > 0 && iwork[10] > nmax) istate = -1; /* IWORK(11): steps so far */
         }
         memcpy(y_out + (size_t)k * (size_t)n, y, (size_t)n * sizeof(double));
@@ -158,6 +176,13 @@ MXN_API int mxn_lsoda(int n, double *y, double *pars, double rtol, double atol, 
     return 2;
 }
 
+static int cvode_jac(sunrealtype t, N_Vector y, N_Vector fy, SUNMatrix J, void *user_data, N_Vector tmp1,
+                     N_Vector tmp2, N_Vector tmp3) {
+    (void)fy; (void)user_data; (void)tmp1; (void)tmp2; (void)tmp3;
+    g_jac((int)N_VGetLength(y), t, N_VGetArrayPointer(y), SM_DATA_D(J), g_pars); /* column-major */
+    return 0;
+}
+
 static int cvode_rhs(sunrealtype t, N_Vector y, N_Vector dydt, void *user_data) {
     (void)user_data;
     int n = (int)N_VGetLength(y);
@@ -169,15 +194,16 @@ static int cvode_rhs(sunrealtype t, N_Vector y, N_Vector dydt, void *user_data) 
     return 0;
 }
 
-/* Same contract as mxn_lsoda, with SUNDIALS' CVODE: BDF with Newton iteration and a dense
- * difference-quotient Jacobian, or with adams != 0, Adams-Moulton with fixed-point
+/* Same contract as mxn_lsoda, with SUNDIALS' CVODE: BDF with Newton iteration and jac or a
+ * dense difference-quotient Jacobian, or with adams != 0, Adams-Moulton with fixed-point
  * iteration. nmax caps the total number of steps. Returns 1 on success, or CVODE's
  * negative flag: -1 too many steps, -2 too much accuracy requested, -3 repeated error
  * test failures, -4 repeated convergence failures, -8 the right-hand side kept failing
  * (non-finite), -22 bad input, ... (see cvode.h). Returns -99 if allocation fails or the
  * result isn't finite. */
-MXN_API int mxn_cvode(int n, double *y, double *pars, double rtol, double atol, int nmax, int adams, int n_out,
-                      const double *t_out, double *y_out) {
+MXN_API int mxn_cvode(int n, double *y, double *pars, intptr_t jac, double rtol, double atol, int nmax,
+                      int adams, int n_out, const double *t_out, double *y_out) {
+    g_jac = (ModelFn)jac;
     SUNContext ctx = NULL;
     if (SUNContext_Create(SUN_COMM_NULL, &ctx) != 0) return -99;
     N_Vector v = N_VMake_Serial(n, y, ctx); /* works on y in place */
@@ -198,6 +224,7 @@ MXN_API int mxn_cvode(int n, double *y, double *pars, double rtol, double atol, 
         A = SUNDenseMatrix(n, n, ctx);
         ls = A ? SUNLinSol_Dense(v, A, ctx) : NULL;
         flag = ls ? CVodeSetLinearSolver(mem, ls, A) : -99;
+        if (flag == CV_SUCCESS && jac) flag = CVodeSetJacFn(mem, cvode_jac);
     }
     memcpy(y_out, y, (size_t)n * sizeof(double));
     double t = t_out[0];
@@ -343,6 +370,41 @@ MXN_API int mxn_adjoint_vjp(int n_y, double *y0, int n_pars, double *pars, int n
                        n_seg_total, seg_t_end, seg_ovr, n_points, data_t, cotangent, n_derived,
                        solver_id, rtol, atol, ss_tol, ss_t_max, out_pred, out_grad, out_lambda0);
 }
+
+/* ------------------------------------------------------------------ */
+/* Discrete adjoint gradients                                          */
+/* ------------------------------------------------------------------ */
+/* Exported wrappers around mxl-solvers' discrete_adjoint.c (see its header for the
+ * arguments): mxn_da_forward integrates a protocol time course with RADAU5, LSODA or CVODE
+ * and records it on a tape (*out_tape, an opaque handle), mxn_da_backward returns the exact
+ * gradient of sum(cotangent * predictions) of that solution for any number of cotangents,
+ * mxn_da_free releases the tape. Tapes are independent, but a forward solve uses the
+ * solvers' global state, so only one runs at a time. */
+MXN_API int mxn_da_forward(intptr_t model, intptr_t jac, intptr_t derived, int method, int n_y,
+                           const double *y0, int n_pars, int n_seg, const double *seg_t_end,
+                           const double *seg_pars, int n_points, const double *t_points,
+                           int n_targets, const int *target_kind, const int *target_index,
+                           int n_derived, double rtol, double atol, int nmax, int options,
+                           double newton_scale, double max_tape_bytes, double *out_pred,
+                           DaTape **out_tape) {
+    return da_forward(model, jac, derived, method, n_y, y0, n_pars, n_seg, seg_t_end, seg_pars,
+                      n_points, t_points, n_targets, target_kind, target_index, n_derived, rtol,
+                      atol, nmax, options, newton_scale, max_tape_bytes, out_pred, out_tape);
+}
+
+MXN_API int mxn_da_backward(DaTape *tape, intptr_t adjoint, intptr_t derived_grad, int n_theta,
+                            const double *cotangent, double *out_grad, double *out_lambda0) {
+    return da_backward(tape, adjoint, derived_grad, n_theta, cotangent, out_grad, out_lambda0);
+}
+
+MXN_API int mxn_da_replay(const DaTape *tape, const double *seg_pars, const double *y0,
+                          double *out_pred) {
+    return da_replay(tape, seg_pars, y0, out_pred);
+}
+
+MXN_API void mxn_da_free(DaTape *tape) { da_free(tape); }
+MXN_API int mxn_da_tape_steps(const DaTape *tape) { return da_tape_steps(tape); }
+MXN_API double mxn_da_tape_bytes(const DaTape *tape) { return da_tape_bytes(tape); }
 
 #ifdef MXN_WASM
 /* Model math stays inside wasm, rather than calling back into Python. */
