@@ -21,6 +21,15 @@ def _decay(n: int, t: float, y: _DP, dydt: _DP, pars: _DP) -> None:  # noqa: ARG
         dydt[i] = -pars[0] * y[i]
 
 
+@_MODEL_FN
+def _decay_jac(n: int, t: float, y: _DP, jac: _DP, pars: _DP) -> None:  # noqa: ARG001
+    # Column-major n x n: -k on the diagonal
+    for i in range(n * n):
+        jac[i] = 0.0
+    for i in range(n):
+        jac[i + i * n] = -pars[0]
+
+
 def _arr(*values: float) -> ct.Array:
     return (ct.c_double * len(values))(*values)
 
@@ -29,14 +38,16 @@ def test_abi_matches() -> None:
     assert mxlpy_native.load().mxn_abi_version() == mxlpy_native.ABI_VERSION
 
 
+@pytest.mark.parametrize("jacobian", ["finite_difference", "analytic"])
 @pytest.mark.parametrize("method", ["radau", "lsoda", "cvode-bdf", "cvode-adams"])
-def test_solve_exponential_decay(method: str) -> None:
+def test_solve_exponential_decay(method: str, jacobian: str) -> None:
     lib = mxlpy_native.load()
     t_out = [0.0, 0.5, 1.0, 2.0]
     y, pars, t, out = _arr(1.0, 2.0), _arr(0.7), _arr(*t_out), _arr(*[0.0] * 8)
     lib.mxn_set_model.argtypes = [ct.c_void_p]
     lib.mxn_set_model(ct.cast(_decay, ct.c_void_p))
-    head = (2, y, pars, ct.c_double(1e-10), ct.c_double(1e-10), 100_000)
+    jac = ct.cast(_decay_jac, ct.c_void_p) if jacobian == "analytic" else ct.c_void_p(0)
+    head = (2, y, pars, jac, ct.c_double(1e-10), ct.c_double(1e-10), 100_000)
     if method == "radau":
         rc = lib.mxn_radau(*head, 0, len(t_out), t, out)
         assert rc == 1
