@@ -1,4 +1,4 @@
-# Vendored from https://github.com/Computational-Biology-Aachen/mxl-solvers at 4f507485216529a0206c0e018bd8b9fb53daf640.
+# Vendored from https://github.com/Computational-Biology-Aachen/mxl-solvers at b7713ef76578986e0edc2553a619f8bb47594081.
 # Don't edit these files here: change mxl-solvers, then re-run its scripts/vendor.sh.
 da5d9b896c422aa002b6d8fc3c7003a6e6345454afd700ae65fa3cd944ab12e5  radau5.c
 8d2173c6ae898e77a71c2dc52e027ce2b6185d91170bd5f031b185aff6e1d354  dc_decsol.c
@@ -29,8 +29,8 @@ faac2ffbb50a7e0dad295bdf7f76e62fe625d3e6343ab1aa31b348d6fe5a411e  minpack/lmpar.
 e69d3dde78e2724a74f0c94e328d38222aef85dd5f76dda49a3209d31eb4f58a  minpack/minpackP.h
 58079701d6d569e71888e9fb3446f7e691db8f73ae0d8096cdfd92311eb4b0c6  minpack/qrfac.c
 fae6ee028024a1ea9f1fcf05cb0a840ee96c934aecd9e461d0266fda06b5abd1  minpack/qrsolv.c
-3d71958c917a4f7eb85fdaeade0b274940a5e8b54b6c892dc877457c15b243d4  adjoint_wrapper.c
-e1dd5c2e811ffbcf92c47ecb52076c53d6c83a4cf412c37e98463b3ac941a812  discrete_adjoint.c
+80514e6a2cf6c8194b329979e2c89f3f10780622619d1f70f3fb012361b3f853  adjoint_wrapper.c
+1f1a41d4612766746ca6a48f2dea2d310b9c87c905813d8cc3b847c87dd862a1  discrete_adjoint.c
 7428b0dc5def76c85612661c687f8d11249b78a01e3734077fbc284b72a5dd7d  discrete_adjoint.h
 27f173597a62f8c3b51355a9c9ac5a528e64c4a9157dd383a8c83177ee8a8bb0  nordsieck_tape.h
 0e9a5c3ba2637f05909967c3eeeac9c7b9a4a4c6e92801a408afd2aa725024e2  sundials/include/cvode/cvode.h
@@ -114,3 +114,4 @@ acc17ac1685b3ef154387b62ec8fe8f2b93d634c820d59d04b6d044f5c73bd66  sundials/src/s
 221e59f5e910fd7f94e44f0dac77436a11338c285c6346232e4a850a50da0e94  SCIPY-LICENCE.txt
 d83f244e1bef3d00a88d043d37d9cd2493c7aa19c9fbf35a837b310e867897a6  SUNDIALS-LICENCE.txt
 5cb9c6b0ca7c09b26fe2d1f9ef45231086c9ea2cdb32eb5f9dce7012e2364bc2  SUNDIALS-NOTICE.txt
+ed87d347f0752da252ef700a1053338e10eda1e5be7f769688563a172b21ad2c  finite_jacobian.h

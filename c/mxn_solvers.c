@@ -5,6 +5,7 @@
  * file keep global state, so only one solve can run at a time in a process. */
 #include "discrete_adjoint.h"
 #include "f2c.h"
+#include "finite_jacobian.h"
 #include "lsoda.h"
 #include <cvode/cvode.h>
 #include <nvector/nvector_serial.h>
@@ -38,7 +39,7 @@ extern double radau5_jac_growth;
 typedef void (*ModelFn)(int, double, double *, double *, double *);
 static ModelFn g_model;
 /* The model's Jacobian df/dy (ModelFn signature, n x n column-major), NULL = the solvers'
- * finite differences. */
+ * finite differences. Called through finite_jacobian, which differences its non-finite columns. */
 static ModelFn g_jac;
 static double *g_pars; /* LSODA's right-hand side takes no parameter array. */
 static const double *g_t_out;
@@ -58,7 +59,7 @@ static int radau_jac(integer *n, doublereal *x, doublereal *y, doublereal *dfy, 
                      doublereal *rpar, integer *ipar) {
     (void)ldfy; /* full Jacobian: ldfy == n */
     (void)ipar;
-    g_jac((int)*n, *x, y, dfy, rpar);
+    finite_jacobian(g_model, g_jac, (int)*n, *x, y, dfy, rpar);
     return 0;
 }
 static int no_mas(void) { return 0; }
@@ -130,7 +131,7 @@ static void lsoda_fcn(int *n, double *t, double *y, double *dydt) { g_model(*n, 
 
 static void lsoda_jac(int *n, double *t, double *y, int *ml, int *mu, double *pd, int *nrowpd) {
     (void)ml; (void)mu; (void)nrowpd; /* full Jacobian: nrowpd == n */
-    g_jac(*n, *t, y, pd, g_pars);
+    finite_jacobian(g_model, g_jac, *n, *t, y, pd, g_pars);
 }
 
 /* Same contract as mxn_radau, with LSODA (SciPy's C translation), using jac or its
@@ -179,7 +180,8 @@ MXN_API int mxn_lsoda(int n, double *y, double *pars, intptr_t jac, double rtol,
 static int cvode_jac(sunrealtype t, N_Vector y, N_Vector fy, SUNMatrix J, void *user_data, N_Vector tmp1,
                      N_Vector tmp2, N_Vector tmp3) {
     (void)fy; (void)user_data; (void)tmp1; (void)tmp2; (void)tmp3;
-    g_jac((int)N_VGetLength(y), t, N_VGetArrayPointer(y), SM_DATA_D(J), g_pars); /* column-major */
+    finite_jacobian(g_model, g_jac, (int)N_VGetLength(y), t, N_VGetArrayPointer(y), SM_DATA_D(J),
+                    g_pars); /* column-major */
     return 0;
 }
 
@@ -357,7 +359,8 @@ MXN_API void mxn_adjoint_set_fns(intptr_t model, intptr_t adjoint, intptr_t deri
 /* Arguments as adjoint_vjp (adjoint_wrapper.c, fit_experiments.h's experiment layout), with the
  * cotangent in data_y's layout. Returns 0, -1 out of memory, -3 inconsistent experiments, -4 a
  * differentiated parameter is overridden, -5 derived targets without derived functions, -7
- * functions not set, or a failed experiment's negative solver code. */
+ * functions not set, or for a failed forward or backward solve -1000 plus the solver's negative
+ * code. */
 MXN_API int mxn_adjoint_vjp(int n_y, double *y0, int n_pars, double *pars, int n_theta,
                             int *theta_idx, int n_targets, int *target_kind, int *target_index,
                             int n_ovr, int *ovr_idx, int n_exp, int *exp_kind, int *exp_n_seg,
