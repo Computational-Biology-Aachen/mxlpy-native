@@ -1,4 +1,4 @@
-# Vendored from https://github.com/Computational-Biology-Aachen/mxl-solvers at b7713ef76578986e0edc2553a619f8bb47594081.
+# Vendored from https://github.com/Computational-Biology-Aachen/mxl-solvers at 0dd94e542c8ebfca2d021b0b714e58a0ce1d6c01.
 # Don't edit these files here: change mxl-solvers, then re-run its scripts/vendor.sh.
 da5d9b896c422aa002b6d8fc3c7003a6e6345454afd700ae65fa3cd944ab12e5  radau5.c
 8d2173c6ae898e77a71c2dc52e027ce2b6185d91170bd5f031b185aff6e1d354  dc_decsol.c
