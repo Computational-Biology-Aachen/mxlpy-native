@@ -12,6 +12,7 @@
 #include <sunlinsol/sunlinsol_dense.h>
 #include <sunmatrix/sunmatrix_dense.h>
 #include <sunnonlinsol/sunnonlinsol_fixedpoint.h>
+#include <float.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -46,6 +47,31 @@ static const double *g_t_out;
 static double *g_y_out;
 static int g_n_out, g_next;
 
+/* Shared by mxn_radau, mxn_lsoda and mxn_cvode: 1 if the request is unusable — no output time,
+ * a non-finite time, state or tolerance, a negative tolerance, or output times that aren't
+ * monotone (repeats are fine) — so the solvers refuse it with their bad-input code instead of
+ * reading out of bounds or integrating nonsense. */
+static int bad_request(int n, const double *y, double rtol, double atol, int n_out, const double *t_out) {
+    if (n < 0 || n_out < 1 || !isfinite(rtol) || !isfinite(atol) || rtol < 0 || atol < 0) return 1;
+    for (int i = 0; i < n; i++)
+        if (!isfinite(y[i])) return 1;
+    const double dir = t_out[n_out - 1] >= t_out[0] ? 1.0 : -1.0;
+    for (int k = 0; k < n_out; k++) {
+        if (!isfinite(t_out[k])) return 1;
+        if (k > 0 && (t_out[k] - t_out[k - 1]) * dir < 0) return 1;
+    }
+    return 0;
+}
+
+/* Nothing to integrate (no state, or all output times equal): every row is y. */
+static int trivial_request(int n, const double *y, int n_out, const double *t_out, double *y_out) {
+    if (n > 0 && t_out[n_out - 1] != t_out[0]) return 0;
+    for (int k = 0; k < n_out; k++) memcpy(y_out + (size_t)k * (size_t)n, y, (size_t)n * sizeof(double));
+    return 1;
+}
+
+#define DEFAULT_NMAX 100000
+
 /* A function pointer natively, a table index in wasm. */
 MXN_API void mxn_set_model(intptr_t model) { g_model = (ModelFn)model; }
 
@@ -64,14 +90,17 @@ static int radau_jac(integer *n, doublereal *x, doublereal *y, doublereal *dfy, 
 }
 static int no_mas(void) { return 0; }
 
+static double g_dir; /* direction of integration, +1 or -1 */
+
 static int solout(integer *nr, doublereal *xold, doublereal *x, doublereal *y, doublereal *cont, integer *lrc,
                   integer *n, doublereal *rpar, integer *ipar, integer *irtrn) {
-    (void)nr; (void)xold; (void)rpar; (void)ipar;
+    (void)xold; (void)rpar; (void)ipar;
     *irtrn = 1;
-    while (g_next < g_n_out && g_t_out[g_next] <= *x) {
+    while (g_next < g_n_out && (g_t_out[g_next] - *x) * g_dir <= 0) {
         double *row = g_y_out + (size_t)g_next * (size_t)*n;
         doublereal s = g_t_out[g_next];
-        if (s == *x) {
+        /* CONTR5 only exists from the second call on (nr == 1 comes before any step). */
+        if (s == *x || *nr < 2) {
             memcpy(row, y, (size_t)*n * sizeof(double));
         } else {
             for (integer i = 1; i <= *n; i++) row[i - 1] = contr5_(&i, &s, cont, lrc);
@@ -81,13 +110,19 @@ static int solout(integer *nr, doublereal *xold, doublereal *x, doublereal *y, d
     return 0;
 }
 
-/* Integrates from t_out[0] to t_out[n_out - 1], writing rows of n values into y_out.
- * y holds the initial state on entry and the final state on return. jac is the model's
- * Jacobian (see g_jac), 0 for finite differences. Returns RADAU5's
- * IDID: positive on success, -1 bad input, -2 too many steps, -3 step too small,
- * -4 singular matrix. Returns -5 if allocation fails or the result isn't finite. */
+/* Integrates from t_out[0] to t_out[n_out - 1], writing rows of n values into y_out. The
+ * output times are monotone in either direction (t_out[n_out - 1] < t_out[0] integrates
+ * backward) and may repeat. y holds the initial state on entry and the final state on
+ * return. jac is the model's Jacobian (see g_jac), 0 for finite differences. nmax <= 0 means
+ * 100000 steps. Returns RADAU5's IDID: positive on success, -1 bad input (also no output
+ * time, non-finite values, unsorted output times), -2 too many steps, -3 step too small
+ * (also a non-finite right-hand side), -4 singular matrix. Returns -5 if allocation fails
+ * or the result isn't finite. */
 MXN_API int mxn_radau(int n, double *y, double *pars, intptr_t jac, double rtol, double atol, int nmax,
                       int reuse_jacobian, int n_out, const double *t_out, double *y_out) {
+    if (bad_request(n, y, rtol, atol, n_out, t_out)) return -1;
+    if (trivial_request(n, y, n_out, t_out, y_out)) return 1;
+    if (nmax <= 0) nmax = DEFAULT_NMAX;
     g_jac = (ModelFn)jac;
     integer N = n, itol = 0, ijac = jac ? 1 : 0, mljac = n, mujac = n, imas = 0, mlmas = n, mumas = n, iout = 1, idid = 0, ipar = 0;
     integer lwork = 4 * N * N + 12 * N + 20, liwork = 3 * N + 20;
@@ -114,6 +149,7 @@ MXN_API int mxn_radau(int n, double *y, double *pars, intptr_t jac, double rtol,
     g_y_out = y_out;
     g_n_out = n_out;
     g_next = 0;
+    g_dir = xend >= x ? 1.0 : -1.0;
     radau5_(&N, (U_fp)fcn_dispatch, &x, y, &xend, &h, &rt, &at, &itol, (U_fp)radau_jac, &ijac, &mljac, &mujac,
             (U_fp)no_mas, &imas, &mlmas, &mumas, (U_fp)solout, &iout, work, &lwork, iwork, &liwork, pars, &ipar, &idid);
     free(work);
@@ -135,13 +171,17 @@ static void lsoda_jac(int *n, double *t, double *y, int *ml, int *mu, double *pd
 }
 
 /* Same contract as mxn_radau, with LSODA (SciPy's C translation), using jac or its
- * internal finite-difference Jacobian. nmax caps the total number of steps. Returns 2 on
- * success, or LSODA's negative ISTATE: -1 too many steps, -2 too much accuracy
+ * internal finite-difference Jacobian. nmax caps the total number of steps (<= 0: 100000).
+ * Returns 2 on success, or LSODA's negative ISTATE: -1 too many steps, -2 too much accuracy
  * requested, -3 bad input, -4 repeated error test failures, -5 repeated convergence
- * failures, -6 an error weight became zero. Returns -9 if allocation fails or the
- * result isn't finite. */
+ * failures, -6 an error weight became zero. Returns -7 if the step size became negligible
+ * (a singularity or a non-finite right-hand side), -9 if allocation fails or the result
+ * isn't finite. */
 MXN_API int mxn_lsoda(int n, double *y, double *pars, intptr_t jac, double rtol, double atol, int nmax,
                       int n_out, const double *t_out, double *y_out) {
+    if (bad_request(n, y, rtol, atol, n_out, t_out)) return -3;
+    if (trivial_request(n, y, n_out, t_out, y_out)) return 2;
+    if (nmax <= 0) nmax = DEFAULT_NMAX;
     g_jac = (ModelFn)jac;
     /* Work array sizes as in SciPy's odepack: Adams up to order 12, BDF up to 5. */
     const int lrn = 20 + n * 13 + 3 * n, lrs = 20 + n * 6 + 3 * n + n * n + 2;
@@ -153,20 +193,30 @@ MXN_API int mxn_lsoda(int n, double *y, double *pars, intptr_t jac, double rtol,
         free(iwork);
         return -9;
     }
-    int itask = 1, istate = 1, iopt = 1;
-    iwork[5] = nmax; /* IWORK(6): steps allowed per output point */
+    /* One step at a time (ITASK = 5) and never past the last output time (TCRIT): models
+     * needn't be defined beyond it. Rows come from LSODA's interpolant over each step. */
+    const double t_end = t_out[n_out - 1], dir = t_end >= t_out[0] ? 1.0 : -1.0;
+    int itask = 5, istate = 1, iopt = 1, k = 0;
+    rwork[0] = t_end; /* RWORK(1): TCRIT */
+    iwork[5] = nmax;  /* IWORK(6): steps allowed per call */
     lsoda_common_struct_t S = {0};
     double t = t_out[0];
     g_pars = pars;
-    memcpy(y_out, y, (size_t)n * sizeof(double));
-    for (int k = 1; k < n_out && istate > 0; k++) {
-        double tout = t_out[k];
-        if (tout != t_out[k - 1]) {
-            lsoda(lsoda_fcn, n, y, &t, &tout, 1, &rtol, &atol, &itask, &istate, &iopt, rwork, lrw, iwork, liw,
-                  jac ? lsoda_jac : NULL, jac ? 1 : 2, &S);
-            if (istate > 0 && iwork[10] > nmax) istate = -1; /* IWORK(11): steps so far */
+    for (; k < n_out && t_out[k] == t; k++) memcpy(y_out + (size_t)k * (size_t)n, y, (size_t)n * sizeof(double));
+    while (k < n_out && istate > 0) {
+        double tout = t_end;
+        lsoda(lsoda_fcn, n, y, &t, &tout, 1, &rtol, &atol, &itask, &istate, &iopt, rwork, lrw, iwork, liw,
+              jac ? lsoda_jac : NULL, jac ? 1 : 2, &S);
+        if (istate < 0) break;
+        for (; k < n_out && (t_out[k] - t) * dir <= 0; k++) {
+            double *row = y_out + (size_t)k * (size_t)n;
+            int iflag = 0;
+            if (t_out[k] == t) memcpy(row, y, (size_t)n * sizeof(double));
+            else lsoda_intdy(t_out[k], 0, rwork, row, &iflag, &S);
         }
-        memcpy(y_out + (size_t)k * (size_t)n, y, (size_t)n * sizeof(double));
+        if (iwork[10] > nmax) istate = -1; /* IWORK(11): steps so far */
+        /* |h| below the spacing of doubles at t: LSODA only warns (MXHNIL = 10 times). */
+        else if (S.nhnil >= 10) istate = -7;
     }
     free(rwork);
     free(iwork);
@@ -196,15 +246,23 @@ static int cvode_rhs(sunrealtype t, N_Vector y, N_Vector dydt, void *user_data) 
     return 0;
 }
 
+/* mxn_cvode: the step size became negligible (see there). */
+#define MXN_CVODE_STALLED (-98)
+
 /* Same contract as mxn_lsoda, with SUNDIALS' CVODE: BDF with Newton iteration and jac or a
  * dense difference-quotient Jacobian, or with adams != 0, Adams-Moulton with fixed-point
- * iteration. nmax caps the total number of steps. Returns 1 on success, or CVODE's
- * negative flag: -1 too many steps, -2 too much accuracy requested, -3 repeated error
- * test failures, -4 repeated convergence failures, -8 the right-hand side kept failing
- * (non-finite), -22 bad input, ... (see cvode.h). Returns -99 if allocation fails or the
+ * iteration. nmax caps the total number of steps (<= 0: 100000). Returns 1 on success, or
+ * CVODE's negative flag: -1 too many steps, -2 too much accuracy requested, -3 repeated
+ * error test failures, -4 repeated convergence failures, -8 the right-hand side kept
+ * failing (non-finite), -22 bad input (also no output time, non-finite values, unsorted
+ * output times), ... (see cvode.h). Returns -98 if the step size became negligible (a
+ * singularity, or a right-hand side that stays non-finite). Returns -99 if allocation fails or the
  * result isn't finite. */
 MXN_API int mxn_cvode(int n, double *y, double *pars, intptr_t jac, double rtol, double atol, int nmax,
                       int adams, int n_out, const double *t_out, double *y_out) {
+    if (bad_request(n, y, rtol, atol, n_out, t_out)) return CV_ILL_INPUT;
+    if (trivial_request(n, y, n_out, t_out, y_out)) return 1;
+    if (nmax <= 0) nmax = DEFAULT_NMAX;
     g_jac = (ModelFn)jac;
     SUNContext ctx = NULL;
     if (SUNContext_Create(SUN_COMM_NULL, &ctx) != 0) return -99;
@@ -228,21 +286,40 @@ MXN_API int mxn_cvode(int n, double *y, double *pars, intptr_t jac, double rtol,
         flag = ls ? CVodeSetLinearSolver(mem, ls, A) : -99;
         if (flag == CV_SUCCESS && jac) flag = CVodeSetJacFn(mem, cvode_jac);
     }
-    memcpy(y_out, y, (size_t)n * sizeof(double));
+    /* One step at a time (CV_ONE_STEP, never past the stop time), rows from CVODE's
+     * interpolant: the same steps as CV_NORMAL, but a step that no longer moves t (a
+     * singularity, or a right-hand side that is non-finite beyond some t, which CVODE retries
+     * with ever smaller steps) is caught after MXHNIL = 10 such steps instead of using up
+     * nmax. */
+    const double t_end = t_out[n_out - 1], dir = t_end >= t_out[0] ? 1.0 : -1.0;
+    N_Vector row = flag == CV_SUCCESS ? N_VNew_Serial(n, ctx) : NULL;
+    if (flag == CV_SUCCESS && !row) flag = -99;
     double t = t_out[0];
-    for (int k = 1; k < n_out && flag >= 0; k++) {
-        if (t_out[k] != t_out[k - 1]) {
-            long int steps = 0;
-            CVodeGetNumSteps(mem, &steps);
-            if (steps >= nmax) {
-                flag = CV_TOO_MUCH_WORK;
-                break;
-            }
-            CVodeSetMaxNumSteps(mem, nmax - steps);
-            flag = CVode(mem, t_out[k], v, &t, CV_NORMAL);
+    int k = 0, tiny_steps = 0;
+    for (; k < n_out && t_out[k] == t; k++) memcpy(y_out + (size_t)k * (size_t)n, y, (size_t)n * sizeof(double));
+    while (k < n_out && flag >= 0) {
+        long int steps = 0;
+        CVodeGetNumSteps(mem, &steps);
+        if (steps >= nmax) {
+            flag = CV_TOO_MUCH_WORK;
+            break;
         }
-        if (flag >= 0) memcpy(y_out + (size_t)k * (size_t)n, y, (size_t)n * sizeof(double));
+        flag = CVode(mem, t_end, v, &t, CV_ONE_STEP);
+        if (flag < 0) break;
+        for (; k < n_out && (t_out[k] - t) * dir <= 0; k++) {
+            double *dst = y_out + (size_t)k * (size_t)n;
+            if (t_out[k] == t) {
+                memcpy(dst, y, (size_t)n * sizeof(double));
+            } else {
+                CVodeGetDky(mem, t_out[k], 0, row);
+                memcpy(dst, N_VGetArrayPointer(row), (size_t)n * sizeof(double));
+            }
+        }
+        double h = 0;
+        CVodeGetLastStep(mem, &h);
+        if (fabs(h) <= 4 * DBL_EPSILON * fabs(t) && ++tiny_steps >= 10) flag = MXN_CVODE_STALLED;
     }
+    if (row) N_VDestroy(row);
     CVodeFree(&mem);
     SUNNonlinSolFree(nls);
     SUNLinSolFree(ls);
