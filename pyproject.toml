@@ -22,7 +22,7 @@ license-files = ["LICENSE", "c/vendor/*LICENCE*.txt", "c/vendor/*NOTICE*.txt"]
 name = "mxlpy-native"
 readme = "README.md"
 requires-python = ">=3.12"
-version = "0.6.0"
+version = "0.7.0"
 
 [project.urls]
 Homepage = "https://github.com/Computational-Biology-Aachen/mxlpy-native"
